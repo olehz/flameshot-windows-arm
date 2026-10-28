@@ -102,13 +102,26 @@ jobs:
           }
           Write-Host "exported MSVC environment for later steps"
 
-      - name: Install OpenSSL
-        uses: lukka/run-vcpkg@v11
+      - name: Checkout vcpkg
+        shell: pwsh
+        run: |
+          where.exe cl
+          git clone https://github.com/microsoft/vcpkg.git vcpkg
+          git -C vcpkg checkout $env:VCPKG_VERSION
+
+      - name: Cache OpenSSL
+        id: openssl-cache
+        uses: actions/cache@v4
         with:
-          vcpkgDirectory: ${{ github.workspace }}\vcpkg
-          vcpkgGitCommitId: ${{ env.VCPKG_VERSION }}
-          runVcpkgInstall: true
-          runVcpkgFormatString: '[`install`, `openssl:arm64-windows`, `--clean-after-build`]'
+          path: vcpkg/installed
+          key: openssl-${{ env.VCPKG_VERSION }}-${{ env.VCPKG_TRIPLET }}
+
+      - name: Install OpenSSL
+        if: steps.openssl-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          cmd /c "vcpkg\bootstrap-vcpkg.bat -disableMetrics"
+          .\vcpkg\vcpkg.exe install "openssl:${env:VCPKG_TRIPLET}"
 
       - name: Configure
         shell: pwsh
