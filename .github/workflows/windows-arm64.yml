@@ -39,15 +39,6 @@ jobs:
           echo "VERSION=${version}" >> "$GITHUB_ENV"
           echo "Building Flameshot ${version} (${FLAMESHOT_REF})"
 
-      - name: Install OpenSSL
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgArguments: openssl-windows
-          vcpkgDirectory: ${{ github.workspace }}\vcpkg
-          appendedCacheKey: ${{ env.VCPKG_TRIPLET }}
-          vcpkgGitCommitId: ${{ env.VCPKG_VERSION }}
-          vcpkgTriplet: ${{ env.VCPKG_TRIPLET }}
-
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -60,30 +51,59 @@ jobs:
           cache-key-prefix: qt-${{ env.QT_VERSION }}-winarm64
           dir: ${{ github.workspace }}/qt
 
+      - name: Setup MSVC ARM64
+        shell: pwsh
+        run: |
+          $bat = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
+          if (-not (Test-Path $bat)) { throw "Missing $bat" }
+          $lines = cmd /c "`"$bat`" arm64 >nul && set"
+          if ($LASTEXITCODE -ne 0) { throw "vcvarsall arm64 exited $LASTEXITCODE" }
+          $keep = @(
+            'PATH','INCLUDE','LIB','LIBPATH',
+            'VCINSTALLDIR','VCToolsInstallDir','VSINSTALLDIR',
+            'WindowsSdkDir','WindowsSDKVersion','UniversalCRTSdkDir','UCRTVersion',
+            'VSCMD_ARG_HOST_ARCH','VSCMD_ARG_TGT_ARCH'
+          )
+          foreach ($line in $lines) {
+            if ($line -match '^([^=]+)=(.*)$' -and $keep -contains $Matches[1]) {
+              "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8NoBOM
+            }
+          }
+          Write-Host "exported MSVC environment for later steps"
+
+      - name: Install OpenSSL
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: ${{ github.workspace }}\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_VERSION }}
+          runVcpkgInstall: true
+          runVcpkgFormatString: '[`install`, `openssl:arm64-windows`, `--clean-after-build`]'
+
       - name: Configure
         shell: pwsh
         working-directory: flameshot
         env:
           OPENSSL_ROOT_DIR: ${{ github.workspace }}\vcpkg\installed\arm64-windows
         run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A ARM64 `
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=arm64-windows `
             -DENABLE_OPENSSL=ON `
-            -DCMAKE_BUILD_TYPE=Release `
             -DUSE_PORTABLE_CONFIG=ON
 
       - name: Compile
         shell: pwsh
         working-directory: flameshot
-        run: cmake --build build --config Release
+        run: cmake --build build
 
       - name: Check the executable is ARM64
         shell: pwsh
         working-directory: flameshot
         run: |
           $exe = Get-ChildItem -Path build -Recurse -Filter flameshot.exe |
-            Where-Object { $_.FullName -match '\\Release\\' } |
+            Where-Object { $_.FullName -notmatch '\\CMakeFiles\\' } |
+            Sort-Object Length -Descending |
             Select-Object -First 1
           if (-not $exe) { throw "flameshot.exe was not produced" }
           $fs = [System.IO.File]::OpenRead($exe.FullName)
