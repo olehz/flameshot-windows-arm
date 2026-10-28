@@ -14,7 +14,7 @@ env:
 
 jobs:
   portable:
-    name: Flameshot ${{ env.FLAMESHOT_REF }} winarm64
+    name: portable winarm64
     runs-on: windows-11-arm
     timeout-minutes: 180
     steps:
