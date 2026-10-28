@@ -8,8 +8,9 @@ on:
 env:
   FLAMESHOT_REF: v14.0.0
   QT_VERSION: 6.9.3
-  # Same vcpkg pin as flameshot-org/flameshot Windows packaging.
-  VCPKG_VERSION: d5ec528843d29e3a52d745a64b469f810b2cedbf
+  # Newer than Flameshot's pin: that tree downloads a removed MSYS2 package
+  # while fixing up OpenSSL's pkg-config files on ARM64.
+  VCPKG_VERSION: 15b12b99a227d51e21c86dffd40385439eac87a0
   VCPKG_TRIPLET: arm64-windows
 
 jobs:
