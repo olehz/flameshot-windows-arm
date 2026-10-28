@@ -1,0 +1,118 @@
+name: Windows ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  FLAMESHOT_REF: v14.0.0
+  QT_VERSION: 6.9.3
+  # Same vcpkg pin as flameshot-org/flameshot Windows packaging.
+  VCPKG_VERSION: d5ec528843d29e3a52d745a64b469f810b2cedbf
+  VCPKG_TRIPLET: arm64-windows
+
+jobs:
+  portable:
+    name: Flameshot ${{ env.FLAMESHOT_REF }} winarm64
+    runs-on: windows-11-arm
+    timeout-minutes: 180
+    steps:
+      - name: Checkout Flameshot
+        uses: actions/checkout@v6
+        with:
+          repository: flameshot-org/flameshot
+          ref: ${{ env.FLAMESHOT_REF }}
+          path: flameshot
+          fetch-depth: 0
+
+      - name: Fix Python path
+        shell: pwsh
+        run: |
+          Remove-Item "$env:LOCALAPPDATA\Microsoft\WindowsApps\python*.exe" -Force -ErrorAction SilentlyContinue
+
+      - name: Read version
+        shell: bash
+        working-directory: flameshot
+        run: |
+          version=$(sed -n 's/^set(FLAMESHOT_VERSION \(.*\))/\1/p' CMakeLists.txt)
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "Building Flameshot ${version} (${FLAMESHOT_REF})"
+
+      - name: Install OpenSSL
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgArguments: openssl-windows
+          vcpkgDirectory: ${{ github.workspace }}\vcpkg
+          appendedCacheKey: ${{ env.VCPKG_TRIPLET }}
+          vcpkgGitCommitId: ${{ env.VCPKG_VERSION }}
+          vcpkgTriplet: ${{ env.VCPKG_TRIPLET }}
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows_arm64
+          target: desktop
+          arch: win64_msvc2022_arm64
+          modules: qtimageformats
+          cache: true
+          cache-key-prefix: qt-${{ env.QT_VERSION }}-winarm64
+          dir: ${{ github.workspace }}/qt
+
+      - name: Configure
+        shell: pwsh
+        working-directory: flameshot
+        env:
+          OPENSSL_ROOT_DIR: ${{ github.workspace }}\vcpkg\installed\arm64-windows
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A ARM64 `
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=arm64-windows `
+            -DENABLE_OPENSSL=ON `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DUSE_PORTABLE_CONFIG=ON
+
+      - name: Compile
+        shell: pwsh
+        working-directory: flameshot
+        run: cmake --build build --config Release
+
+      - name: Check the executable is ARM64
+        shell: pwsh
+        working-directory: flameshot
+        run: |
+          $exe = Get-ChildItem -Path build -Recurse -Filter flameshot.exe |
+            Where-Object { $_.FullName -match '\\Release\\' } |
+            Select-Object -First 1
+          if (-not $exe) { throw "flameshot.exe was not produced" }
+          $fs = [System.IO.File]::OpenRead($exe.FullName)
+          $br = New-Object System.IO.BinaryReader($fs)
+          $fs.Position = 0x3C
+          $pe = $br.ReadInt32()
+          $fs.Position = $pe + 4
+          $machine = $br.ReadUInt16()
+          $br.Close()
+          $fs.Close()
+          Write-Host "$($exe.FullName) PE machine 0x$($machine.ToString('X4'))"
+          if ($machine -ne 0xAA64) {
+            throw "expected ARM64 (0xAA64)"
+          }
+
+      - name: Package portable zip
+        shell: pwsh
+        working-directory: flameshot/build
+        run: |
+          cpack -G ZIP -B "$env:GITHUB_WORKSPACE\package"
+          $src = Get-Item "$env:GITHUB_WORKSPACE\package\flameshot-*-win64.zip"
+          $dst = Join-Path $env:GITHUB_WORKSPACE "flameshot-$env:VERSION-winarm64.zip"
+          Copy-Item $src.FullName $dst
+          Get-FileHash $dst -Algorithm SHA256 | Format-List
+
+      - name: Upload portable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: flameshot-${{ env.VERSION }}-winarm64
+          path: flameshot-${{ env.VERSION }}-winarm64.zip
+          if-no-files-found: error
+          compression-level: 0
